@@ -32,18 +32,20 @@ namespace WinFormsApp1
 
         private void UpdateTotalAmount()
         {
-
             decimal total = 0;
 
             foreach (DataGridViewRow row in dataGridView1.Rows)
             {
-                if (row.Cells["Subtotal"].Value != null && decimal.TryParse(row.Cells["Subtotal"].Value.ToString(), out decimal subtotal))
+                if (row.Cells["Subtotal"].Value != null)
                 {
-                    total += subtotal;
+                    if (decimal.TryParse(row.Cells["Subtotal"].Value.ToString(), out decimal subtotal))
+                    {
+                        total += subtotal;
+                    }
                 }
             }
 
-            textBox1.Text = total.ToString("N0");
+            textBox1.Text = total.ToString("N0"); // Update total textbox with thousands separator
         }
 
         private void LoadSalesData(DateTime startDate, DateTime endDate)
@@ -467,8 +469,8 @@ namespace WinFormsApp1
 
                         // Insert into SalesDetails
                         string insertDetailQuery = @"
-                    INSERT INTO SalesDetails (SaleID, ProductID, Quantity, UnitPrice, Subtotal, ReturnedQuantity) 
-                    VALUES (@SaleID, @ProductID, @Quantity, @UnitPrice, @Subtotal, @ReturnedQuantity)";
+    INSERT INTO SalesDetails (SaleID, ProductID, Quantity, UnitPrice, Subtotal, ReturnedQuantity) 
+    VALUES (@SaleID, @ProductID, @Quantity, @UnitPrice, @Subtotal, @ReturnedQuantity)";
                         SqlCommand cmdDetail = new SqlCommand(insertDetailQuery, conn, transaction);
                         cmdDetail.Parameters.AddWithValue("@SaleID", saleID);
                         cmdDetail.Parameters.AddWithValue("@ProductID", productID);
@@ -478,11 +480,32 @@ namespace WinFormsApp1
                         cmdDetail.Parameters.AddWithValue("@ReturnedQuantity", returnedQuantity);
                         cmdDetail.ExecuteNonQuery();
 
+                        // Validate available stock before updating
+                        string checkStockQuery = @"
+    SELECT QuantityAvailable 
+    FROM Product 
+    WHERE ProductID = @ProductID";
+                        SqlCommand cmdCheckStock = new SqlCommand(checkStockQuery, conn, transaction);
+                        cmdCheckStock.Parameters.AddWithValue("@ProductID", productID);
+
+                        int availableQuantity = Convert.ToInt32(cmdCheckStock.ExecuteScalar());
+                        if (availableQuantity < quantity)
+                        {
+                            transaction.Rollback();
+                            MessageBox.Show(
+                                $"Not enough stock for Product ID {productID}. Available: {availableQuantity}, Required: {quantity}.",
+                                "Stock Error",
+                                MessageBoxButtons.OK,
+                                MessageBoxIcon.Warning
+                            );
+                            return;
+                        }
+
                         // Update Product stock
                         string updateProductQuery = @"
-                    UPDATE Product 
-                    SET QuantityAvailable = QuantityAvailable - @Quantity
-                    WHERE ProductID = @ProductID";
+    UPDATE Product 
+    SET QuantityAvailable = QuantityAvailable - @Quantity
+    WHERE ProductID = @ProductID";
                         SqlCommand cmdUpdateProduct = new SqlCommand(updateProductQuery, conn, transaction);
                         cmdUpdateProduct.Parameters.AddWithValue("@Quantity", quantity);
                         cmdUpdateProduct.Parameters.AddWithValue("@ProductID", productID);
@@ -731,20 +754,53 @@ namespace WinFormsApp1
 
         private void dataGridView1_CellEndEdit(object sender, DataGridViewCellEventArgs e)
         {
+            DataGridViewRow row = dataGridView1.Rows[e.RowIndex];
+
+            // Handle UnitPrice column edits
             if (dataGridView1.Columns[e.ColumnIndex].Name == "UnitPrice")
             {
-                DataGridViewRow row = dataGridView1.Rows[e.RowIndex];
-
                 // Validate and recalculate Subtotal
                 if (decimal.TryParse(row.Cells["UnitPrice"].Value.ToString(), out decimal unitPrice) &&
                     int.TryParse(row.Cells["Quantity"].Value.ToString(), out int quantity))
                 {
-                    row.Cells["Subtotal"].Value = (unitPrice * quantity).ToString("N0");
-                    UpdateTotalAmount();
+                    if (unitPrice < 0)
+                    {
+                        MessageBox.Show("Unit Price cannot be negative", "Error", MessageBoxButtons.OK, MessageBoxIcon.Error);
+                        row.Cells["UnitPrice"].Value = "0";
+                    }
+                    else
+                    {
+                        row.Cells["Subtotal"].Value = (unitPrice * quantity).ToString("N0");
+                        UpdateTotalAmount();
+                    }
                 }
                 else
                 {
                     MessageBox.Show("Invalid Unit Price or Quantity", "Error", MessageBoxButtons.OK, MessageBoxIcon.Error);
+                }
+            }
+
+            // Handle Quantity column edits
+            if (dataGridView1.Columns[e.ColumnIndex].Name == "Quantity")
+            {
+                // Validate and recalculate Subtotal
+                if (int.TryParse(row.Cells["Quantity"].Value.ToString(), out int quantity) &&
+                    decimal.TryParse(row.Cells["UnitPrice"].Value.ToString(), out decimal unitPrice))
+                {
+                    if (quantity <= 0)
+                    {
+                        MessageBox.Show("Quantity must be greater than zero", "Error", MessageBoxButtons.OK, MessageBoxIcon.Error);
+                        row.Cells["Quantity"].Value = "1"; // Reset to minimum value
+                    }
+                    else
+                    {
+                        row.Cells["Subtotal"].Value = (unitPrice * quantity).ToString("N0");
+                        UpdateTotalAmount();
+                    }
+                }
+                else
+                {
+                    MessageBox.Show("Invalid Quantity or Unit Price", "Error", MessageBoxButtons.OK, MessageBoxIcon.Error);
                 }
             }
         }
